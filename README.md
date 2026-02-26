@@ -1,6 +1,6 @@
 # Sparkey Reflect
 
-**AI coding advisor** that analyzes your AI coding sessions (Claude Code, Cursor, GitHub Copilot) and generates personalized coaching insights. Runs 100% locally — your conversation data never leaves your machine.
+**AI coding advisor** that analyzes your Claude Code sessions and generates personalized coaching insights. Runs 100% locally — your conversation data never leaves your machine.
 
 ## Install
 
@@ -68,12 +68,6 @@ sparkey-reflect learning-path
 | `session_habits` | Session length, time-of-day, and workflow patterns |
 | `rule_file_quality` | CLAUDE.md and instruction file effectiveness |
 | `outcome_quality` | Success rate and task completion quality |
-
-## Supported AI tools
-
-- **Claude Code** — full support (conversations, tool usage, rule files)
-- **Cursor** — session analysis
-- **GitHub Copilot** — usage metrics
 
 ## Teams edition
 
