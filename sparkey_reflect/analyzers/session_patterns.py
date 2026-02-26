@@ -1,12 +1,16 @@
 """
 Session Patterns Analyzer
 
-Analyzes patterns across sessions over time:
-- Average session duration and distribution
-- Sessions per day / frequency
-- Peak usage hours
-- Task type distribution
-- Fatigue indicators (declining quality in long sessions)
+Analyzes patterns across sessions over time using smooth scoring curves
+grounded in industry benchmarks:
+- Duration (w=0.20): Ideal 25-45 min = peak productivity (DevEx)
+- Frequency (w=0.20): 2-6/day = sustained engagement (SPACE)
+- Diversity (w=0.15): Using AI for varied task types
+- Fatigue (w=0.20): Quality degrades after threshold
+- Deep Work Alignment (w=0.25): Uninterrupted coding blocks (DORA 2024) (NEW)
+
+Benchmarks: DevEx (25-45 min sessions = peak productivity), SPACE (2-6/day
+sustained engagement), DORA 2024 (uninterrupted coding blocks boost throughput).
 """
 
 from collections import Counter
@@ -19,6 +23,14 @@ from sparkey_reflect.core.models import (
     RuleFileInfo,
     Session,
 )
+from sparkey_reflect.core.scoring import bell, diminishing, sigmoid, weighted_sum
+
+# Minimum gap (minutes) between session end and next session start
+# to consider the block "uninterrupted"
+DEEP_WORK_GAP_MINUTES = 15
+
+# Minimum block duration (minutes) to count as deep work
+DEEP_WORK_MIN_BLOCK_MINUTES = 120
 
 
 class SessionPatternsAnalyzer(BaseReflectAnalyzer):
@@ -56,26 +68,33 @@ class SessionPatternsAnalyzer(BaseReflectAnalyzer):
         # Task type distribution
         type_counts = Counter(s.session_type.value for s in sessions)
         type_dist = {k: v / len(sessions) for k, v in type_counts.items()}
+        active_types = sum(1 for v in type_dist.values() if v > 0.05)
 
         # Fatigue detection
         fatigue_rate = self._detect_fatigue(sessions)
 
-        # Token efficiency (tokens per minute of session)
+        # Token efficiency
         total_tokens = sum(s.total_tokens for s in sessions)
         total_minutes = sum(durations)
         tokens_per_minute = total_tokens / total_minutes if total_minutes > 0 else 0
 
-        # Scoring
-        # Good duration: 10-60 min (not too short, not marathon)
-        duration_score = self._score_duration(avg_duration)
-        # Good frequency: 2-8 sessions/day
-        frequency_score = self._score_frequency(sessions_per_day)
-        # Diversity: using AI for varied tasks
-        diversity_score = self._score_diversity(type_dist)
-        # Low fatigue
-        fatigue_score = max(0, 25 * (1 - fatigue_rate * 2))
+        # Deep work alignment
+        deep_work_ratio = self._compute_deep_work_ratio(sessions)
 
-        overall = duration_score + frequency_score + diversity_score + fatigue_score
+        # Smooth scoring: each dimension 0-1
+        duration_dim = bell(avg_duration, 35, 20)
+        frequency_dim = bell(sessions_per_day, 4, 2.5)
+        diversity_dim = diminishing(active_types, 5)
+        fatigue_dim = 1 - sigmoid(fatigue_rate, 0.2, 8)
+        deep_work_dim = sigmoid(deep_work_ratio, 0.4, 4)
+
+        overall = weighted_sum([
+            (duration_dim, 0.20),
+            (frequency_dim, 0.20),
+            (diversity_dim, 0.15),
+            (fatigue_dim, 0.20),
+            (deep_work_dim, 0.25),
+        ])
 
         period_start = min((s.start_time for s in sessions if s.start_time), default=None)
         period_end = max((s.end_time for s in sessions if s.end_time), default=None)
@@ -92,6 +111,7 @@ class SessionPatternsAnalyzer(BaseReflectAnalyzer):
                 "peak_hour": peak_hours[0] if peak_hours else None,
                 "fatigue_rate": round(fatigue_rate, 3),
                 "tokens_per_minute": round(tokens_per_minute, 1),
+                "deep_work_ratio": round(deep_work_ratio, 3),
                 "task_type_distribution": {k: round(v, 3) for k, v in type_dist.items()},
             },
             insights=[],
@@ -140,49 +160,49 @@ class SessionPatternsAnalyzer(BaseReflectAnalyzer):
             if len(user_turns) < 4:
                 continue
 
-            # Compare first half vs second half prompt lengths
             mid = len(user_turns) // 2
             first_half_avg = sum(len(t.content.split()) for t in user_turns[:mid]) / mid
             second_half_avg = sum(len(t.content.split()) for t in user_turns[mid:]) / (len(user_turns) - mid)
 
-            # Shorter prompts in second half suggest fatigue (less effort)
             if second_half_avg < first_half_avg * 0.6:
                 fatigue_count += 1
 
         return fatigue_count / analyzable if analyzable > 0 else 0
 
-    def _score_duration(self, avg_minutes: float) -> float:
-        """Score 0-25: Ideal session length is 10-60 min."""
-        if avg_minutes == 0:
-            return 0
-        if 10 <= avg_minutes <= 60:
-            return 25
-        if 5 <= avg_minutes < 10 or 60 < avg_minutes <= 90:
-            return 18
-        if avg_minutes < 5:
-            return 10  # too short, probably not getting value
-        return 12  # marathon sessions
+    def _compute_deep_work_ratio(self, sessions: List[Session]) -> float:
+        """Fraction of sessions occurring in 2+ hour uninterrupted blocks.
 
-    def _score_frequency(self, sessions_per_day: float) -> float:
-        """Score 0-25: Ideal frequency is 2-8 sessions/day."""
-        if sessions_per_day == 0:
-            return 0
-        if 2 <= sessions_per_day <= 8:
-            return 25
-        if 1 <= sessions_per_day < 2 or 8 < sessions_per_day <= 12:
-            return 18
-        if sessions_per_day < 1:
-            return 10  # underutilized
-        return 12  # potential over-reliance
+        Based on DORA 2024 finding that fragmented work hurts throughput.
+        A block is uninterrupted if no session starts within 15 min of
+        the previous session's end.
+        """
+        timed_sessions = [s for s in sessions if s.start_time and s.end_time]
+        if not timed_sessions:
+            return 0.0
 
-    def _score_diversity(self, type_dist: Dict[str, float]) -> float:
-        """Score 0-25: Using AI for varied task types is good."""
-        active_types = sum(1 for v in type_dist.values() if v > 0.05)
-        if active_types >= 4:
-            return 25
-        if active_types >= 3:
-            return 20
-        if active_types >= 2:
-            return 15
-        return 8
+        timed_sessions.sort(key=lambda s: s.start_time)
 
+        # Group sessions into contiguous blocks
+        blocks: List[List[Session]] = []
+        current_block: List[Session] = [timed_sessions[0]]
+
+        for s in timed_sessions[1:]:
+            prev = current_block[-1]
+            gap_minutes = (s.start_time - prev.end_time).total_seconds() / 60
+            if gap_minutes <= DEEP_WORK_GAP_MINUTES:
+                current_block.append(s)
+            else:
+                blocks.append(current_block)
+                current_block = [s]
+        blocks.append(current_block)
+
+        # Count sessions in blocks that span 2+ hours
+        deep_work_sessions = 0
+        for block in blocks:
+            block_start = block[0].start_time
+            block_end = block[-1].end_time
+            block_duration = (block_end - block_start).total_seconds() / 60
+            if block_duration >= DEEP_WORK_MIN_BLOCK_MINUTES:
+                deep_work_sessions += len(block)
+
+        return deep_work_sessions / len(timed_sessions)

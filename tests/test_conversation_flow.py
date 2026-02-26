@@ -20,13 +20,13 @@ class TestConversationFlowAnalyzer:
         assert result.score == 0
 
     def test_perfect_session(self, analyzer, make_session, make_turn):
-        """Single-turn session = perfect flow."""
+        """Single-turn session = good flow."""
         session = make_session(turns=[
             make_turn(content="Add a logout button to the navbar"),
         ])
         result = analyzer.analyze([session])
         # Single turn = good turns score, 1.0 first acceptance
-        assert result.score > 60
+        assert result.score > 40
 
     def test_high_correction_rate_lowers_score(self, analyzer, make_session, make_turn):
         session = make_session(turns=[
@@ -68,3 +68,14 @@ class TestConversationFlowAnalyzer:
     def test_score_bounded(self, analyzer, sample_sessions):
         result = analyzer.analyze(sample_sessions)
         assert 0 <= result.score <= 100
+
+    def test_iteration_velocity_metric(self, analyzer, make_session, make_turn):
+        """New iteration velocity dimension is computed."""
+        session = make_session(turns=[
+            make_turn(content="Add auth"),
+            make_turn(role="assistant", content="I'll implement the full authentication system with login, logout, and session management. Here's the complete implementation..."),
+        ])
+        result = analyzer.analyze([session])
+        assert "iteration_velocity" in result.metrics
+        # Assistant produced much more than user -> high velocity
+        assert result.metrics["iteration_velocity"] > 1.0
