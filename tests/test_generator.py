@@ -19,6 +19,25 @@ def generator():
     return InsightGenerator(storage=None, use_llm=False)
 
 
+class TestAnalyzerWeights:
+    def test_weights_sum_correctly(self):
+        """Non-copilot weights (excluding completion_patterns) should sum to ~1.0."""
+        non_copilot = {k: v for k, v in ANALYZER_WEIGHTS.items() if k != "completion_patterns"}
+        assert sum(non_copilot.values()) == pytest.approx(1.0, abs=0.01)
+
+    def test_outcome_tracker_weight_increased(self):
+        assert ANALYZER_WEIGHTS["outcome_tracker"] == 0.20
+
+    def test_session_patterns_weight_decreased(self):
+        assert ANALYZER_WEIGHTS["session_patterns"] == 0.10
+
+    def test_prompt_quality_unchanged(self):
+        assert ANALYZER_WEIGHTS["prompt_quality"] == 0.20
+
+    def test_conversation_flow_unchanged(self):
+        assert ANALYZER_WEIGHTS["conversation_flow"] == 0.20
+
+
 class TestComputeOverallScore:
     def test_single_result(self, generator, make_result):
         results = [make_result(key="prompt_quality", score=80.0)]
@@ -40,7 +59,22 @@ class TestComputeOverallScore:
     def test_unknown_analyzer_gets_default_weight(self, generator, make_result):
         results = [make_result(key="unknown_analyzer", score=60.0)]
         score = generator._compute_overall_score(results)
-        assert score == 60.0  # only one result, so it's the score itself
+        assert score == 60.0
+
+    def test_outcome_tracker_has_higher_impact(self, generator, make_result):
+        """Outcome tracker weight (0.20) now exceeds session_patterns (0.10)."""
+        results_outcome_high = [
+            make_result(key="outcome_tracker", score=100.0),
+            make_result(key="session_patterns", score=0.0),
+        ]
+        results_outcome_low = [
+            make_result(key="outcome_tracker", score=0.0),
+            make_result(key="session_patterns", score=100.0),
+        ]
+        score_high = generator._compute_overall_score(results_outcome_high)
+        score_low = generator._compute_overall_score(results_outcome_low)
+        # outcome_tracker at 100 should produce higher overall than session_patterns at 100
+        assert score_high > score_low
 
 
 class TestComputeTrend:

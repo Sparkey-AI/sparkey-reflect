@@ -1,11 +1,17 @@
 """
 Conversation Flow Analyzer
 
-Analyzes the dynamics of AI conversations:
-- Turns to resolution: How many turns before the task is done
-- Correction rate: How often the user has to correct the AI
-- Context loss rate: How often context is re-stated
-- First response acceptance: How often the first AI response is accepted
+Analyzes the dynamics of AI conversations across five dimensions using smooth
+scoring curves grounded in industry benchmarks:
+- Turns to Resolution (w=0.25): Fewer turns = faster lead time (DORA)
+- Correction Rate (w=0.25): <10% corrections = healthy (Jellyfish)
+- Context Retention (w=0.15): Context loss drives rework (SPACE)
+- First Acceptance (w=0.15): >60% first-accept = strong (DevEx)
+- Iteration Velocity (w=0.20): Higher AI output/user input = effective delegation (NEW)
+
+Benchmarks: DORA (fewer iterations = faster lead time), Jellyfish (<10%
+corrections = healthy), SPACE (context loss -> rework), GitClear (higher
+AI output/user input = effective delegation).
 """
 
 import re
@@ -17,6 +23,7 @@ from sparkey_reflect.core.models import (
     RuleFileInfo,
     Session,
 )
+from sparkey_reflect.core.scoring import bell, sigmoid, weighted_sum
 
 # Patterns indicating the user is correcting the AI
 CORRECTION_PATTERNS = [
@@ -71,6 +78,7 @@ class ConversationFlowAnalyzer(BaseReflectAnalyzer):
         all_correction_rates = []
         all_context_loss_rates = []
         all_first_acceptance = []
+        all_iteration_velocity = []
 
         for session in sessions:
             user_turns = [t for t in session.turns if t.role == "user" and t.content]
@@ -98,7 +106,6 @@ class ConversationFlowAnalyzer(BaseReflectAnalyzer):
 
             # First response acceptance
             if len(user_turns) >= 2:
-                # Check if the second user message is a completion/acceptance
                 second_msg = user_turns[1].content
                 is_acceptance = any(
                     re.search(p, second_msg, re.IGNORECASE) for p in COMPLETION_PATTERNS
@@ -117,8 +124,16 @@ class ConversationFlowAnalyzer(BaseReflectAnalyzer):
                 else:
                     all_first_acceptance.append(0.0)
             elif len(user_turns) == 1:
-                # Single-turn session: accepted first response implicitly
                 all_first_acceptance.append(1.0)
+
+            # Iteration Velocity: ratio of assistant tokens to user tokens
+            user_tokens = sum(len(t.content.split()) for t in session.turns if t.role == "user" and t.content)
+            assistant_tokens = sum(len(t.content.split()) for t in session.turns if t.role == "assistant" and t.content)
+            if user_tokens > 0:
+                velocity_ratio = assistant_tokens / user_tokens
+            else:
+                velocity_ratio = 0
+            all_iteration_velocity.append(velocity_ratio)
 
         avg = lambda vals: sum(vals) / len(vals) if vals else 0
 
@@ -126,18 +141,22 @@ class ConversationFlowAnalyzer(BaseReflectAnalyzer):
         avg_correction = avg(all_correction_rates)
         avg_context_loss = avg(all_context_loss_rates)
         avg_first_accept = avg(all_first_acceptance)
+        avg_velocity = avg(all_iteration_velocity)
 
-        # Score calculation (0-100)
-        # Fewer turns = better (ideal: 1-3 user turns)
-        turns_score = max(0, 25 - max(0, (avg_turns - 2) * 4))
-        # Lower correction rate = better
-        correction_score = max(0, 25 * (1 - avg_correction * 3))
-        # Lower context loss = better
-        context_score = max(0, 25 * (1 - avg_context_loss * 3))
-        # Higher first acceptance = better
-        acceptance_score = avg_first_accept * 25
+        # Smooth scoring: each dimension 0-1
+        turns_dim = bell(avg_turns, 2.5, 2.0)
+        correction_dim = 1 - sigmoid(avg_correction, 0.15, 12)
+        context_dim = 1 - sigmoid(avg_context_loss, 0.10, 10)
+        acceptance_dim = sigmoid(avg_first_accept, 0.5, 4)
+        velocity_dim = sigmoid(avg_velocity, 0.6, 3)
 
-        overall = turns_score + correction_score + context_score + acceptance_score
+        overall = weighted_sum([
+            (turns_dim, 0.25),
+            (correction_dim, 0.25),
+            (context_dim, 0.15),
+            (acceptance_dim, 0.15),
+            (velocity_dim, 0.20),
+        ])
 
         period_start = min((s.start_time for s in sessions if s.start_time), default=None)
         period_end = max((s.end_time for s in sessions if s.end_time), default=None)
@@ -151,6 +170,7 @@ class ConversationFlowAnalyzer(BaseReflectAnalyzer):
                 "correction_rate": round(avg_correction, 3),
                 "context_loss_rate": round(avg_context_loss, 3),
                 "first_response_acceptance": round(avg_first_accept, 3),
+                "iteration_velocity": round(avg_velocity, 3),
                 "sessions_analyzed": len(sessions),
             },
             insights=[],
@@ -158,4 +178,3 @@ class ConversationFlowAnalyzer(BaseReflectAnalyzer):
             period_start=period_start,
             period_end=period_end,
         )
-
