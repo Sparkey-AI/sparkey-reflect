@@ -77,6 +77,12 @@ sparkey-reflect learning-path
 
 Get version code + project management integrations, trend tracking, usage analytics, and industry benchmarks at [sparkey.ai](https://sparkey.ai).
 
+## Methodology
+
+Scoring grounded in industry-standard frameworks (DORA, SPACE, DevEx) and validated against published research from GitClear and METR.
+
+DORA is a program of Google Cloud. GitClear and METR are independent organizations. Sparkey is not affiliated with or endorsed by any of these entities.
+
 ## License
 
 MIT
