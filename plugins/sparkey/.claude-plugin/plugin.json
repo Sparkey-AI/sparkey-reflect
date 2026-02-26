@@ -1,0 +1,10 @@
+{
+  "name": "sparkey",
+  "description": "Sparkey Reflect — AI coding advisor that analyzes your sessions and generates coaching insights",
+  "version": "1.0.0",
+  "author": {
+    "name": "Sparkey AI"
+  },
+  "homepage": "https://sparkey.ai",
+  "repository": "https://github.com/sparkey-ai/sparkey-reflect"
+}

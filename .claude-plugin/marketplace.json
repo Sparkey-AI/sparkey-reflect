@@ -1,0 +1,19 @@
+{
+  "name": "sparkey-reflect",
+  "owner": {
+    "name": "Sparkey AI",
+    "email": "admin@sparkey.ai"
+  },
+  "plugins": [
+    {
+      "name": "sparkey",
+      "source": "./plugins/sparkey",
+      "description": "AI coding advisor — analyzes sessions and generates coaching insights",
+      "version": "1.0.0",
+      "author": {
+        "name": "Sparkey AI"
+      },
+      "homepage": "https://sparkey.ai"
+    }
+  ]
+}
