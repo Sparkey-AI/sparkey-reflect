@@ -1,10 +1,13 @@
 {
   "name": "sparkey",
-  "description": "Sparkey Reflect — AI coding advisor that analyzes your sessions and generates coaching insights",
-  "version": "1.0.0",
+  "description": "Sparkey Reflect — AI coding advisor that analyzes your sessions and generates coaching insights with smooth, industry-benchmarked scoring",
+  "version": "0.1.1",
   "author": {
-    "name": "Sparkey AI"
+    "name": "Sparkey AI",
+    "email": "admin@sparkey.ai"
   },
   "homepage": "https://sparkey.ai",
-  "repository": "https://github.com/sparkey-ai/sparkey-reflect"
+  "repository": "https://github.com/Sparkey-AI/sparkey-reflect",
+  "license": "MIT",
+  "keywords": ["ai", "coding", "advisor", "productivity", "coaching", "skills", "reflect"]
 }

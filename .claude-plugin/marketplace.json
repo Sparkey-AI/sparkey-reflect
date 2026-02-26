@@ -4,16 +4,21 @@
     "name": "Sparkey AI",
     "email": "admin@sparkey.ai"
   },
+  "metadata": {
+    "description": "Sparkey Reflect — AI coding advisor with industry-benchmarked scoring",
+    "version": "0.1.1"
+  },
   "plugins": [
     {
       "name": "sparkey",
       "source": "./plugins/sparkey",
-      "description": "AI coding advisor — analyzes sessions and generates coaching insights",
-      "version": "1.0.0",
+      "description": "AI coding advisor — analyzes your AI coding sessions and generates coaching insights with smooth, industry-benchmarked scoring (DORA, SPACE, DevEx, GitClear, METR)",
+      "version": "0.1.1",
       "author": {
         "name": "Sparkey AI"
       },
-      "homepage": "https://sparkey.ai"
+      "homepage": "https://sparkey.ai",
+      "keywords": ["ai", "coding", "advisor", "productivity", "coaching", "skills", "reflect"]
     }
   ]
 }
