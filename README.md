@@ -77,7 +77,7 @@ sparkey-reflect learning-path
 
 ## Teams edition
 
-Get Version Code + Project management integrations, trend tracking, usage analytics, and industry benchmarks at [sparkey.ai](https://sparkey.ai).
+Get version code + project management integrations, trend tracking, usage analytics, and industry benchmarks at [sparkey.ai](https://sparkey.ai).
 
 ## License
 
