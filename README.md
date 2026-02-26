@@ -4,17 +4,21 @@
 
 ## Install
 
-### As a Claude Code plugin
+### As a Claude Code plugin (recommended)
+
+Requires Claude Code 1.0.33+ and Python 3.11+.
 
 ```bash
-# From the Claude Code plugin marketplace
-/plugin marketplace add sparkey-ai/sparkey-reflect
+# Step 1: Add the marketplace source
+/plugin marketplace add Sparkey-AI/sparkey-reflect
 
-# Or install directly
+# Step 2: Install the plugin
 /plugin install sparkey@sparkey-reflect
 ```
 
-### As a CLI tool
+The plugin auto-installs the `sparkey-reflect` PyPI package on first run.
+
+### As a standalone CLI tool
 
 ```bash
 pip install sparkey-reflect
