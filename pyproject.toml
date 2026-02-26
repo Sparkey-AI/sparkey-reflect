@@ -1,6 +1,6 @@
 [project]
 name = "sparkey-reflect"
-version = "0.1.0"
+version = "0.1.1"
 description = "AI coding advisor — analyzes your AI coding sessions and generates coaching insights"
 readme = "README.md"
 license = { text = "MIT" }
