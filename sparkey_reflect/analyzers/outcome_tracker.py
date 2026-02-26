@@ -1,16 +1,22 @@
 """
 Outcome Tracker Analyzer
 
-Correlates AI coding sessions with development outcomes:
-- AI-Assisted Commit Rate (0-25): What proportion of commits happen during/after AI sessions
-- Session Productivity (0-25): Tokens and turns per productive output
-- Rework Indicator (0-25): Whether AI sessions correlate with lower rework
-- Quality Signals (0-25): Session patterns associated with higher-quality outcomes
+Correlates AI coding sessions with development outcomes across five dimensions
+using smooth scoring curves grounded in industry benchmarks:
+- AI Commit Rate (w=0.20): Proportion of commits during/after AI sessions
+- Productivity (w=0.20): Commits per session hour (DORA: throughput proxy)
+- Rework Rate (w=0.25): Lower rework = better (GitClear 2024: AI rework 3.1->5.7%)
+- Quality Signals (w=0.15): Commit message quality and cadence
+- Commit Quality Trend (w=0.20): Improving rework rate over time (NEW)
+
+Benchmarks: DORA (throughput proxy), GitClear 2024 (AI rework trends),
+DORA (stability improving over time).
 
 Requires git access (workspace_path must be a git repo).
 """
 
 import logging
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -24,14 +30,19 @@ from sparkey_reflect.core.models import (
     RuleFileInfo,
     Session,
 )
-
-# Note: InsightCategory, InsightSeverity, ReflectInsight still needed
-# for the early-return "No git data available" insight in analyze().
+from sparkey_reflect.core.scoring import sigmoid, weighted_sum
 
 logger = logging.getLogger(__name__)
 
 # How close a commit must be to a session to be considered "AI-assisted"
 AI_ASSISTED_WINDOW_MINUTES = 30
+
+# Rework patterns in commit messages
+REWORK_PATTERNS = [
+    r"\b(fix|revert|undo|rollback|hotfix|patch)\b",
+    r"\b(typo|oops|again|retry|re-do)\b",
+    r"\b(bug|broken|wrong|incorrect)\b",
+]
 
 
 class OutcomeTrackerAnalyzer(BaseReflectAnalyzer):
@@ -104,19 +115,28 @@ class OutcomeTrackerAnalyzer(BaseReflectAnalyzer):
         total_session_hours = sum(s.duration_minutes for s in sessions) / 60.0
         commits_per_hour = total_commits / total_session_hours if total_session_hours > 0 else 0
 
-        # Rework indicator: analyze commit message patterns for rework signals
+        # Rework rate
         rework_rate = self._compute_rework_rate(all_commits)
 
-        # Quality signals: multi-file commits, reasonable sizes
-        quality_score = self._compute_quality_signals(all_commits)
+        # Quality signals (compound score)
+        quality_dim = self._compute_quality_dim(all_commits)
 
-        # Scoring
-        commit_rate_score = self._score_ai_commit_rate(ai_commit_rate)
-        productivity_score = self._score_productivity(commits_per_hour, total_session_hours)
-        rework_score = self._score_rework(rework_rate)
-        quality_dim_score = quality_score  # already 0-25
+        # Commit quality trend: compare recent 25% vs older 75%
+        trend_improvement = self._compute_quality_trend(all_commits)
 
-        overall = commit_rate_score + productivity_score + rework_score + quality_dim_score
+        # Smooth scoring: each dimension 0-1
+        commit_rate_dim = sigmoid(ai_commit_rate, 0.4, 5)
+        productivity_dim = sigmoid(commits_per_hour, 1.0, 2)
+        rework_dim = 1 - sigmoid(rework_rate, 0.12, 10)
+        trend_dim = sigmoid(trend_improvement, 0, 3)
+
+        overall = weighted_sum([
+            (commit_rate_dim, 0.20),
+            (productivity_dim, 0.20),
+            (rework_dim, 0.25),
+            (quality_dim, 0.15),
+            (trend_dim, 0.20),
+        ])
 
         period_start = min((s.start_time for s in sessions if s.start_time), default=None)
         period_end = max((s.end_time for s in sessions if s.end_time), default=None)
@@ -132,7 +152,8 @@ class OutcomeTrackerAnalyzer(BaseReflectAnalyzer):
                 "ai_commit_rate": round(ai_commit_rate, 3),
                 "commits_per_hour": round(commits_per_hour, 2),
                 "rework_rate": round(rework_rate, 3),
-                "quality_score": round(quality_score, 1),
+                "quality_signals": round(quality_dim, 3),
+                "commit_quality_trend": round(trend_improvement, 3),
                 "total_session_hours": round(total_session_hours, 1),
             },
             insights=[],
@@ -203,10 +224,8 @@ class OutcomeTrackerAnalyzer(BaseReflectAnalyzer):
             for session in sessions:
                 if not session.start_time or not session.end_time:
                     continue
-                # Commit within session timeframe (± window)
                 start = session.start_time - window
                 end = session.end_time + window
-                # Ensure timezone-aware comparison
                 if ct.tzinfo is None:
                     ct = ct.replace(tzinfo=timezone.utc)
                 if start.tzinfo is None:
@@ -221,36 +240,28 @@ class OutcomeTrackerAnalyzer(BaseReflectAnalyzer):
 
     def _compute_rework_rate(self, commits: List[Dict]) -> float:
         """Estimate rework rate from commit messages."""
-        rework_patterns = [
-            r"\b(fix|revert|undo|rollback|hotfix|patch)\b",
-            r"\b(typo|oops|again|retry|re-do)\b",
-            r"\b(bug|broken|wrong|incorrect)\b",
-        ]
         rework_count = 0
         for commit in commits:
             subject = commit["subject"].lower()
-            if any(
-                __import__("re").search(p, subject)
-                for p in rework_patterns
-            ):
+            if any(re.search(p, subject) for p in REWORK_PATTERNS):
                 rework_count += 1
         return rework_count / len(commits) if commits else 0
 
-    def _compute_quality_signals(self, commits: List[Dict]) -> float:
-        """Score 0-25: Quality signals from commit patterns."""
+    def _compute_quality_dim(self, commits: List[Dict]) -> float:
+        """Compute quality dimension (0-1) from commit patterns."""
         if not commits:
-            return 12
+            return 0.5
 
-        score = 12.0  # baseline
+        score = 0.0
 
-        # Good commit message length (not too short)
+        # Good commit message length
         avg_subject_len = sum(len(c["subject"]) for c in commits) / len(commits)
         if avg_subject_len >= 30:
-            score += 5
+            score += 0.35
         elif avg_subject_len >= 15:
-            score += 3
+            score += 0.2
 
-        # Consistent committing (not all at once)
+        # Consistent cadence
         if len(commits) >= 3:
             timestamps = sorted(c["timestamp"] for c in commits)
             gaps = [
@@ -258,66 +269,50 @@ class OutcomeTrackerAnalyzer(BaseReflectAnalyzer):
                 for i in range(len(timestamps) - 1)
             ]
             avg_gap = sum(gaps) / len(gaps) if gaps else 0
-            # Regular commits (gap of 1-8 hours) = good cadence
             if 1 <= avg_gap <= 8:
-                score += 5
+                score += 0.35
             elif 0.5 <= avg_gap <= 24:
-                score += 3
+                score += 0.2
 
-        # Descriptive commit messages (not just "wip" or "update")
+        # Low-quality message rate
         low_quality_msgs = sum(
             1 for c in commits
             if len(c["subject"]) < 10
             or c["subject"].lower() in ("wip", "update", "fix", "changes", "stuff")
         )
-        if low_quality_msgs == 0:
-            score += 3
-        elif low_quality_msgs / len(commits) < 0.1:
-            score += 2
+        low_quality_rate = low_quality_msgs / len(commits)
+        if low_quality_rate == 0:
+            score += 0.3
+        elif low_quality_rate < 0.1:
+            score += 0.2
 
-        return min(25, score)
+        return min(1.0, score)
 
-    # =========================================================================
-    # Scoring Dimensions (0-25 each)
-    # =========================================================================
+    def _compute_quality_trend(self, commits: List[Dict]) -> float:
+        """Compare rework rate in recent 25% vs older 75%.
 
-    def _score_ai_commit_rate(self, rate: float) -> float:
-        """Score 0-25: AI-assisted commit rate."""
-        # Higher rate means AI sessions correlate with productive output
-        if rate >= 0.7:
-            return 25
-        if rate >= 0.5:
-            return 21
-        if rate >= 0.3:
-            return 16
-        if rate >= 0.1:
-            return 10
-        return 5
+        Returns positive value if improving (recent has less rework),
+        negative if declining, ~0 if stable. Range roughly -1 to 1.
+        """
+        if len(commits) < 4:
+            return 0.0  # insufficient data -> neutral
 
-    def _score_productivity(self, commits_per_hour: float, total_hours: float) -> float:
-        """Score 0-25: Commits per session hour."""
-        if total_hours < 0.5:
-            return 12  # insufficient data
+        # Sort by timestamp (oldest first)
+        sorted_commits = sorted(commits, key=lambda c: c["timestamp"])
+        split_idx = int(len(sorted_commits) * 0.75)
 
-        if commits_per_hour >= 2:
-            return 25
-        if commits_per_hour >= 1:
-            return 21
-        if commits_per_hour >= 0.5:
-            return 16
-        if commits_per_hour >= 0.2:
-            return 10
-        return 5
+        older = sorted_commits[:split_idx]
+        recent = sorted_commits[split_idx:]
 
-    def _score_rework(self, rework_rate: float) -> float:
-        """Score 0-25: Lower rework = better."""
-        if rework_rate <= 0.05:
-            return 25
-        if rework_rate <= 0.1:
-            return 21
-        if rework_rate <= 0.2:
-            return 16
-        if rework_rate <= 0.35:
-            return 10
-        return 5
+        def rework_rate(commit_list: List[Dict]) -> float:
+            count = sum(
+                1 for c in commit_list
+                if any(re.search(p, c["subject"].lower()) for p in REWORK_PATTERNS)
+            )
+            return count / len(commit_list) if commit_list else 0
 
+        older_rate = rework_rate(older)
+        recent_rate = rework_rate(recent)
+
+        # Positive = improving (recent rework is lower)
+        return older_rate - recent_rate

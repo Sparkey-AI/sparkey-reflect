@@ -1,16 +1,22 @@
 """
 Rule File Quality Analyzer
 
-Evaluates the quality of AI instruction/rule files across four dimensions:
-- Completeness (0-25): Coverage of key areas (project context, examples, constraints, style)
-- Specificity (0-25): Concrete, actionable instructions vs vague guidelines
-- Actionability (0-25): Clear dos/don'ts, structured sections, imperative language
-- Currency (0-25): File freshness, appropriate size, maintenance indicators
+Evaluates the quality of AI instruction/rule files across five dimensions
+using smooth scoring curves grounded in industry benchmarks:
+- Completeness (w=0.25): Coverage of key areas + primary file bonus
+- Specificity (w=0.25): Pattern density of concrete instructions
+- Actionability (w=0.20): Clear dos/don'ts, imperative language density
+- Currency (w=0.15): Freshness (DORA: stale docs = risk)
+- Ecosystem Coverage (w=0.15): Multiple instruction surfaces (NEW)
+
+Benchmarks: DORA (stale documentation increases risk), broader ecosystem
+coverage (CLAUDE.md, .cursorrules, .mcp.json, memory files) = more
+comprehensive AI guidance.
 """
 
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from datetime import datetime, timezone
+from typing import List, Optional
 
 from sparkey_reflect.analyzers.base_analyzer import BaseReflectAnalyzer
 from sparkey_reflect.core.models import (
@@ -22,6 +28,7 @@ from sparkey_reflect.core.models import (
     Session,
     ToolType,
 )
+from sparkey_reflect.core.scoring import count_score, sigmoid, weighted_sum
 
 # Primary instruction file types per tool
 PRIMARY_RULE_FILES = {
@@ -37,23 +44,30 @@ EXCELLENT_WORD_COUNT = 800
 
 # Specificity patterns (concrete instructions)
 SPECIFICITY_PATTERNS = [
-    r'\b(use|prefer|always use|never use)\s+\w+',  # "use snake_case"
-    r'`[^`]+`',  # inline code references
-    r'\b(version|v\d|python\s*\d|node\s*\d)',  # version mentions
-    r'\b(import|from|require|include)\s+\w+',  # specific imports/packages
-    r'\b(directory|folder|path)\s*[:/]\s*\S+',  # specific paths
+    r'\b(use|prefer|always use|never use)\s+\w+',
+    r'`[^`]+`',
+    r'\b(version|v\d|python\s*\d|node\s*\d)',
+    r'\b(import|from|require|include)\s+\w+',
+    r'\b(directory|folder|path)\s*[:/]\s*\S+',
 ]
 
 # Actionability patterns (imperative language)
 ACTIONABILITY_PATTERNS = [
-    r'^[-*]\s',  # bullet points
-    r'^\d+[\.\)]\s',  # numbered lists
-    r'\b(DO|DON\'T|MUST|NEVER|ALWAYS|IMPORTANT|CRITICAL|NOTE)\b',  # caps emphasis
-    r'\b(should|shall|must|require|forbidden|prohibited|mandatory)\b',  # modal verbs
+    r'^[-*]\s',
+    r'^\d+[\.\)]\s',
+    r'\b(DO|DON\'T|MUST|NEVER|ALWAYS|IMPORTANT|CRITICAL|NOTE)\b',
+    r'\b(should|shall|must|require|forbidden|prohibited|mandatory)\b',
 ]
 
 # Currency: stale threshold
 STALE_DAYS = 90
+
+# Distinct rule file types for ecosystem coverage
+ECOSYSTEM_FILE_TYPES = {
+    "claude_md", "cursorrules", "copilot_instructions",
+    "mcp_config", "claude_user_mcp",
+    "claude_settings", "memory",
+}
 
 
 class RuleFileAnalyzer(BaseReflectAnalyzer):
@@ -114,20 +128,45 @@ class RuleFileAnalyzer(BaseReflectAnalyzer):
                 )],
             )
 
-        # Determine primary file (most important instruction file)
+        # Determine primary file
         tool = existing_files[0].tool
         primary_type = PRIMARY_RULE_FILES.get(tool, "claude_md")
         primary = next(
             (rf for rf in existing_files if rf.file_type == primary_type), None
         )
 
-        # Score each dimension across all existing files
-        completeness = self._score_completeness(existing_files, primary)
-        specificity = self._score_specificity(existing_files)
-        actionability = self._score_actionability(existing_files)
-        currency = self._score_currency(existing_files)
+        # Compute raw signals for each dimension
+        completeness_signals = self._count_completeness_signals(existing_files, primary)
+        specificity_density = self._compute_specificity_density(existing_files)
+        actionability_signals = self._count_actionability_signals(existing_files)
+        days_since_update = self._compute_days_since_update(existing_files)
+        ecosystem_count = self._count_ecosystem_files(existing_files)
 
-        overall = completeness + specificity + actionability + currency
+        # Smooth scoring: each dimension 0-1
+        completeness_dim = sigmoid(completeness_signals, 3, 0.8)
+        # Add primary file bonus
+        if primary:
+            completeness_dim = min(1.0, completeness_dim + 0.15)
+
+        specificity_dim = sigmoid(specificity_density, 0.15, 8)
+        actionability_dim = sigmoid(actionability_signals, 5, 0.5)
+
+        if days_since_update is None:
+            currency_dim = 0.5  # neutral - can't determine
+        else:
+            currency_dim = 1 - sigmoid(days_since_update, 45, 0.05)
+
+        ecosystem_dim = count_score(ecosystem_count, [
+            (1, 0.3), (2, 0.5), (3, 0.7), (4, 0.85), (5, 1.0),
+        ])
+
+        overall = weighted_sum([
+            (completeness_dim, 0.25),
+            (specificity_dim, 0.25),
+            (actionability_dim, 0.20),
+            (currency_dim, 0.15),
+            (ecosystem_dim, 0.15),
+        ])
 
         period_start = min((s.start_time for s in sessions if s.start_time), default=None) if sessions else None
         period_end = max((s.end_time for s in sessions if s.end_time), default=None) if sessions else None
@@ -145,10 +184,11 @@ class RuleFileAnalyzer(BaseReflectAnalyzer):
                 "total_words": total_words,
                 "total_sections": total_sections,
                 "has_primary": primary is not None,
-                "completeness": round(completeness, 1),
-                "specificity": round(specificity, 1),
-                "actionability": round(actionability, 1),
-                "currency": round(currency, 1),
+                "completeness": round(completeness_dim, 3),
+                "specificity": round(specificity_dim, 3),
+                "actionability": round(actionability_dim, 3),
+                "currency": round(currency_dim, 3),
+                "ecosystem_coverage": ecosystem_count,
             },
             insights=[],
             session_count=len(sessions) if sessions else 0,
@@ -157,182 +197,91 @@ class RuleFileAnalyzer(BaseReflectAnalyzer):
         )
 
     # =========================================================================
-    # Scoring Dimensions (0-25 each)
+    # Signal Computation
     # =========================================================================
 
-    def _score_completeness(
+    def _count_completeness_signals(
         self, existing: List[RuleFileInfo], primary: Optional[RuleFileInfo]
     ) -> float:
-        """Score 0-25: Coverage of key instruction areas."""
-        score = 0.0
+        """Count completeness coverage flags (0-6+)."""
+        signals = 0.0
 
-        # Primary file exists
         if primary:
-            score += 5
-
-            # Word count check
             if primary.word_count >= EXCELLENT_WORD_COUNT:
-                score += 5
+                signals += 1.5
             elif primary.word_count >= GOOD_WORD_COUNT:
-                score += 3
+                signals += 1
             elif primary.word_count >= MIN_WORD_COUNT:
-                score += 1
+                signals += 0.5
 
-        # Coverage flags (across all files)
         has = lambda attr: any(getattr(rf, attr, False) for rf in existing)
         if has("has_project_context"):
-            score += 4
+            signals += 1
         if has("has_examples"):
-            score += 4
+            signals += 1
         if has("has_constraints"):
-            score += 4
+            signals += 1
         if has("has_style_guide"):
-            score += 3
+            signals += 0.8
 
-        return min(25, score)
+        return signals
 
-    def _score_specificity(self, existing: List[RuleFileInfo]) -> float:
-        """Score 0-25: Concrete, specific instructions."""
-        if not existing:
-            return 0
-
+    def _compute_specificity_density(self, existing: List[RuleFileInfo]) -> float:
+        """Compute density of specificity patterns (matches per line)."""
         all_content = " ".join(rf.raw_content or "" for rf in existing)
         if not all_content.strip():
-            return 0
+            return 0.0
 
-        score = 0.0
-        total_lines = all_content.count("\n") + 1
-
-        # Count specificity pattern matches
+        total_lines = max(all_content.count("\n") + 1, 1)
         match_count = 0
         for pattern in SPECIFICITY_PATTERNS:
             match_count += len(re.findall(pattern, all_content, re.IGNORECASE | re.MULTILINE))
 
-        # Density of specific instructions
-        density = match_count / max(total_lines, 1)
-        if density >= 0.3:
-            score += 12
-        elif density >= 0.15:
-            score += 8
-        elif density >= 0.05:
-            score += 4
+        return match_count / total_lines
 
-        # Section count indicates structure
-        total_sections = sum(rf.section_count for rf in existing)
-        if total_sections >= 10:
-            score += 8
-        elif total_sections >= 5:
-            score += 5
-        elif total_sections >= 2:
-            score += 3
-
-        # Code examples (backtick blocks)
-        code_blocks = len(re.findall(r'```', all_content))
-        if code_blocks >= 6:
-            score += 5
-        elif code_blocks >= 2:
-            score += 3
-        elif code_blocks >= 1:
-            score += 1
-
-        return min(25, score)
-
-    def _score_actionability(self, existing: List[RuleFileInfo]) -> float:
-        """Score 0-25: Clear, actionable language and structure."""
-        if not existing:
-            return 0
-
+    def _count_actionability_signals(self, existing: List[RuleFileInfo]) -> float:
+        """Count actionability signals across all files."""
         all_content = " ".join(rf.raw_content or "" for rf in existing)
         if not all_content.strip():
-            return 0
+            return 0.0
 
-        score = 0.0
+        signals = 0.0
         lines = all_content.split("\n")
 
-        # Structured lists (bullets, numbers)
+        # Structured lists
         list_lines = sum(
             1 for line in lines
             if re.match(r'^\s*[-*]\s', line) or re.match(r'^\s*\d+[\.\)]\s', line)
         )
         list_ratio = list_lines / max(len(lines), 1)
-        if list_ratio >= 0.2:
-            score += 8
-        elif list_ratio >= 0.1:
-            score += 5
-        elif list_lines >= 3:
-            score += 3
+        signals += list_ratio * 10  # scale up
 
-        # Imperative / emphasis language
-        emphasis_count = 0
-        for pattern in ACTIONABILITY_PATTERNS[2:]:  # caps + modals
-            emphasis_count += len(re.findall(pattern, all_content, re.MULTILINE))
-        if emphasis_count >= 10:
-            score += 8
-        elif emphasis_count >= 5:
-            score += 5
-        elif emphasis_count >= 2:
-            score += 3
+        # Emphasis language
+        for pattern in ACTIONABILITY_PATTERNS[2:]:
+            signals += len(re.findall(pattern, all_content, re.MULTILINE)) * 0.3
 
-        # Do/Don't pairs (clear guidance)
+        # Do/Don't pairs
         dos = len(re.findall(r'\b(do|always|prefer|use)\b', all_content, re.IGNORECASE))
         donts = len(re.findall(r"\b(don't|never|avoid|do not)\b", all_content, re.IGNORECASE))
-        if dos >= 3 and donts >= 2:
-            score += 6
-        elif dos >= 2 or donts >= 1:
-            score += 3
+        signals += min(dos, 5) * 0.3
+        signals += min(donts, 5) * 0.3
 
-        # Headers create scannable structure
-        header_count = sum(rf.section_count for rf in existing)
-        if header_count >= 8:
-            score += 3
-        elif header_count >= 3:
-            score += 2
+        return signals
 
-        return min(25, score)
-
-    def _score_currency(self, existing: List[RuleFileInfo]) -> float:
-        """Score 0-25: Freshness and maintenance of rule files."""
-        if not existing:
-            return 0
-
-        score = 0.0
-        now = datetime.now(timezone.utc)
-
-        # Check primary file freshness
+    def _compute_days_since_update(self, existing: List[RuleFileInfo]) -> Optional[float]:
+        """Compute days since most recent update. Returns None if unknown."""
         dates = [rf.last_modified for rf in existing if rf.last_modified]
         if not dates:
-            return 12  # neutral - can't determine
-
+            return None
         most_recent = max(dates)
-        days_since = (now - most_recent).days
+        return (datetime.now(timezone.utc) - most_recent).days
 
-        if days_since <= 7:
-            score += 12
-        elif days_since <= 30:
-            score += 10
-        elif days_since <= STALE_DAYS:
-            score += 6
-        else:
-            score += 2
-
-        # Appropriate size (not too small, not bloated)
-        total_words = sum(rf.word_count for rf in existing)
-        if GOOD_WORD_COUNT <= total_words <= 5000:
-            score += 8
-        elif MIN_WORD_COUNT <= total_words < GOOD_WORD_COUNT:
-            score += 5
-        elif total_words > 5000:
-            score += 4  # overly large might be unfocused
-        else:
-            score += 2
-
-        # Multiple files = better maintenance (settings, memory, etc.)
-        if len(existing) >= 4:
-            score += 5
-        elif len(existing) >= 2:
-            score += 3
-        else:
-            score += 1
-
-        return min(25, score)
-
+    def _count_ecosystem_files(self, existing: List[RuleFileInfo]) -> int:
+        """Count distinct rule file types for ecosystem coverage."""
+        types_found = set()
+        for rf in existing:
+            if rf.file_type in ECOSYSTEM_FILE_TYPES:
+                types_found.add(rf.file_type)
+            else:
+                types_found.add(rf.file_type)
+        return len(types_found)

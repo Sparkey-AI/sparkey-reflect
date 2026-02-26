@@ -35,14 +35,14 @@ logger = logging.getLogger(__name__)
 # completion_patterns only applies to Copilot; when present, weights are
 # renormalized at runtime so the sum stays 1.0.
 ANALYZER_WEIGHTS = {
-    "prompt_quality": 0.20,
-    "conversation_flow": 0.20,
-    "session_patterns": 0.15,
-    "context_management": 0.15,
-    "tool_usage": 0.10,
-    "rule_file": 0.05,
-    "outcome_tracker": 0.15,
-    "completion_patterns": 0.15,
+    "prompt_quality": 0.20,       # core skill
+    "conversation_flow": 0.20,    # core efficiency
+    "context_management": 0.15,   # unchanged
+    "session_patterns": 0.10,     # down from 0.15 — habits, not skill
+    "tool_usage": 0.10,           # unchanged
+    "outcome_tracker": 0.20,      # up from 0.15 — outcomes matter most
+    "rule_file": 0.05,            # unchanged — optional
+    "completion_patterns": 0.15,  # Copilot-only, renormalized at runtime
 }
 
 
