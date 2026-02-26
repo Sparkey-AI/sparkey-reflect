@@ -27,6 +27,11 @@ dependencies = [
     "pydantic>=2.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
 [project.urls]
 Homepage = "https://sparkey.ai"
 Repository = "https://github.com/sparkey-ai/sparkey-reflect"
@@ -41,3 +46,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sparkey_reflect"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

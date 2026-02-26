@@ -20,13 +20,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -e .
+        run: pip install -e ".[dev]"
 
-      - name: Smoke test - CLI help
+      - name: Run unit tests
+        run: pytest -v
+
+      - name: Smoke test - CLI
         run: sparkey-reflect --help
-
-      - name: Smoke test - status command
-        run: python -m sparkey_reflect status
-
-      - name: Smoke test - import package
-        run: python -c "from sparkey_reflect import __version__; print(f'v{__version__}')"
